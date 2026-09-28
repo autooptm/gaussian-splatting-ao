@@ -44,7 +44,7 @@ class Camera(nn.Module):
         self.alpha_mask = None
         if resized_image_rgb.shape[0] == 4:
             self.alpha_mask = resized_image_rgb[3:4, ...].to(self.data_device)
-        else: 
+        elif train_test_exp and is_test_view:
             self.alpha_mask = torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
 
         if train_test_exp and is_test_view:
@@ -60,7 +60,8 @@ class Camera(nn.Module):
         self.invdepthmap = None
         self.depth_reliable = False
         if invdepthmap is not None:
-            self.depth_mask = torch.ones_like(self.alpha_mask)
+            self.depth_mask = torch.ones_like(self.alpha_mask) if self.alpha_mask is not None \
+                else torch.ones_like(resized_image_rgb[0:1, ...].to(self.data_device))
             self.invdepthmap = cv2.resize(invdepthmap, resolution)
             self.invdepthmap[self.invdepthmap < 0] = 0
             self.depth_reliable = True

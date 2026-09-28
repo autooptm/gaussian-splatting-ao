@@ -27,6 +27,26 @@ try:
 except:
     pass
 
+_AO_OPT_1 = os.environ.get("AO_GS_OPT_1", "0").lower() in ("1", "true", "yes")
+
+
+def _ao_render_activations(scaling_raw, rotation_raw, opacity_raw, features_dc, features_rest):
+    return (torch.exp(scaling_raw),
+            torch.nn.functional.normalize(rotation_raw),
+            torch.sigmoid(opacity_raw),
+            torch.cat((features_dc, features_rest), dim=1))
+
+
+def _ao_render_activations_nocat(scaling_raw, rotation_raw, opacity_raw):
+    return (torch.exp(scaling_raw),
+            torch.nn.functional.normalize(rotation_raw),
+            torch.sigmoid(opacity_raw),
+            None)
+
+
+_ao_activations_fn = [None, None]
+
+
 class GaussianModel:
 
     def setup_functions(self):
@@ -142,6 +162,26 @@ class GaussianModel:
     def get_covariance(self, scaling_modifier = 1):
         return self.covariance_activation(self.get_scaling, scaling_modifier, self._rotation)
 
+    def render_activations(self, with_sh=True):
+        slot, eager = (0, _ao_render_activations) if with_sh else (1, _ao_render_activations_nocat)
+        args = ((self._scaling, self._rotation, self._opacity,
+                 self._features_dc, self._features_rest) if with_sh
+                else (self._scaling, self._rotation, self._opacity))
+        fn = _ao_activations_fn[slot]
+        if fn is None:
+            fn = eager
+            if _AO_OPT_1:
+                try:
+                    fn = torch.compile(eager)
+                except Exception:
+                    fn = eager
+            _ao_activations_fn[slot] = fn
+        try:
+            return fn(*args)
+        except Exception:
+            _ao_activations_fn[slot] = eager
+            return eager(*args)
+
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:
             self.active_sh_degree += 1
@@ -251,7 +291,10 @@ class GaussianModel:
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
         attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
-        elements[:] = list(map(tuple, attributes))
+        offset = 0
+        for name in elements.dtype.names:
+            elements[name] = attributes[:, offset]
+            offset += 1
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
 
@@ -411,7 +454,7 @@ class GaussianModel:
         # Extract points that satisfy the gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
-        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        selected_pts_mask = padded_grad >= grad_threshold
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values > self.percent_dense*scene_extent)
 
@@ -434,7 +477,7 @@ class GaussianModel:
 
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
+        selected_pts_mask = torch.norm(grads, dim=-1) >= grad_threshold
         selected_pts_mask = torch.logical_and(selected_pts_mask,
                                               torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
         
@@ -451,7 +494,7 @@ class GaussianModel:
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
         grads = self.xyz_gradient_accum / self.denom
-        grads[grads.isnan()] = 0.0
+        torch.nan_to_num_(grads, nan=0.0, posinf=float("inf"), neginf=float("-inf"))
 
         self.tmp_radii = radii
         self.densify_and_clone(grads, max_grad, extent)
@@ -466,8 +509,15 @@ class GaussianModel:
         tmp_radii = self.tmp_radii
         self.tmp_radii = None
 
-        torch.cuda.empty_cache()
+        if os.environ.get("AO_GS_OPT_2", "0").lower() in ("1", "true", "yes"):
+            torch.cuda.empty_cache()
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
+        if update_filter.dtype == torch.bool:
+            grad = torch.norm(viewspace_point_tensor.grad[:, :2], dim=-1, keepdim=True)
+            mask = update_filter.unsqueeze(1)
+            self.xyz_gradient_accum += torch.where(mask, grad, torch.zeros((), device=grad.device))
+            self.denom += mask.to(self.denom.dtype)
+            return
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1

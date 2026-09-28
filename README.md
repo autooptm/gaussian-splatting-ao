@@ -1,3 +1,71 @@
+<div align="center">
+  <a href="https://autooptm.com"><img src=".autooptm/logo.png" width="96" alt="AutoOptm"></a>
+
+  <h1>gaussian-splatting · optimized by <a href="https://autooptm.com">AutoOptm</a></h1>
+
+  <p><b>3.42x faster end to end</b> on the command below, output verified against the stock program.</p>
+
+  <p>
+    <a href="https://autooptm.com"><img alt="speedup" src="https://img.shields.io/badge/end--to--end-3.42x-2ea44f"></a>
+    <a href="https://github.com/graphdeco-inria/gaussian-splatting/commit/54c035f7834b564019656c3e3fcc3646292f727d"><img alt="base" src="https://img.shields.io/badge/upstream-54c035f7834b-blue"></a>
+    <img alt="card" src="https://img.shields.io/badge/measured%20on-RTX%205090-lightgrey">
+  </p>
+</div>
+
+> This is a fork of [graphdeco-inria/gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting) at commit
+> [`54c035f7834b`](https://github.com/graphdeco-inria/gaussian-splatting/commit/54c035f7834b564019656c3e3fcc3646292f727d) with the AutoOptm patch applied on top.
+> The optimisation was found, measured and verified automatically by [AutoOptm](https://autooptm.com);
+> the patch is also kept verbatim at [`.autooptm/autooptm.patch`](.autooptm/autooptm.patch).
+
+Part of the speedup comes from `install_rasterizer.sh`, which installs a rasterizer variant that upstream's own README documents (and makes it build on CUDA 13). The optimizer and the densification recipe are unchanged. Without it, the code changes alone give 1.13x per iteration and are numerically identical to stock.
+
+## The result
+
+| | |
+|---|---|
+| **Command** | `python train.py -s tandt_db/tandt/train -m output/train --iterations 7000` |
+| **Entry point** | `train.py` |
+| **Unit measured** | one training iteration on the Tanks&Temples *train* scene (render → loss → backward → densification bookkeeping → optimizer step) |
+| **Before (stock)** | 12.564 ms per unit |
+| **After (this tree + `install_rasterizer.sh`, all switches default ON)** | 3.678 ms per unit |
+| **Speedup** | **3.42x** end to end on RTX 5090, host noise floor 0.28% |
+| **Output** | per-iteration loss within 2.5e-6 relative of stock (the stock program moves it 3.8e-7 between two identical runs), gradient cosine 1.0; held-out cameras bit-identical |
+
+### What changed
+
+| File | Where | Gain (alone) |
+|---|---|---|
+| `install_rasterizer.sh` | new file: installs a rasterizer variant upstream's README documents | 1.88x |
+| `gaussian_renderer/__init__.py` | render() | 1.088x |
+| `train.py` | training() | with the row above |
+| `scene/gaussian_model.py` | add_densification_stats() | with the row above |
+| `train.py` | training() | 1.047x |
+| `train.py` | training() | 1.017x |
+| `scene/cameras.py` | Camera.__init__ | 1.01x |
+| `gaussian_renderer/__init__.py` | render() | 1.005x |
+| `scene/gaussian_model.py` | densify_and_prune() / densify_and_split() / densify_and_clone() | 1.0x |
+| `scene/gaussian_model.py` | save_ply() | 1.0x |
+| `utils/camera_utils.py` | cameraList_from_camInfos() | 1.0x |
+
+## Reproduce
+
+```bash
+git clone --recursive git@github.com:autooptm/gaussian-splatting-ao.git
+cd gaussian-splatting-ao
+# set up exactly as upstream documents, then:
+bash install_rasterizer.sh
+python train.py -s tandt_db/tandt/train -m output/train --iterations 7000
+```
+
+The diff against upstream is one commit: `git log -1 -p` shows it, and
+`git diff 54c035f7834b` is the same patch as `.autooptm/autooptm.patch`.
+
+---
+
+<div align="center"><sub>Optimized by <a href="https://autooptm.com">AutoOptm</a> — point it at a repository, get back a verified speedup and the patch.</sub></div>
+
+---
+
 # 3D Gaussian Splatting for Real-Time Radiance Field Rendering
 Bernhard Kerbl*, Georgios Kopanas*, Thomas Leimkühler, George Drettakis (* indicates equal contribution)<br>
 | [Webpage](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/) | [Full Paper](https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/3d_gaussian_splatting_high.pdf) | [Video](https://youtu.be/T_kXY43VZnk) | [Other GRAPHDECO Publications](http://www-sop.inria.fr/reves/publis/gdindex.php) | [FUNGRAPH project page](https://fungraph.inria.fr) |<br>

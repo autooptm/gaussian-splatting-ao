@@ -9,6 +9,8 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
+import os
+
 from scene.cameras import Camera
 import numpy as np
 from utils.graphics_utils import fov2focal
@@ -67,6 +69,20 @@ def loadCam(args, id, cam_info, resolution_scale, is_nerf_synthetic, is_test_dat
                   train_test_exp=args.train_test_exp, is_test_dataset=is_test_dataset, is_test_view=cam_info.is_test)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args, is_nerf_synthetic, is_test_dataset):
+    n_par = int(os.environ.get("AO_GS_OPT_3", "0") or 0)
+    if n_par <= 0:
+        n_par = min(8, (os.cpu_count() or 4))
+    if n_par > 1 and len(cam_infos) >= 4:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=n_par) as pool:
+                return list(pool.map(
+                    lambda ic: loadCam(args, ic[0], ic[1], resolution_scale,
+                                       is_nerf_synthetic, is_test_dataset),
+                    list(enumerate(cam_infos))))
+        except Exception as exc:
+            pass
+
     camera_list = []
 
     for id, c in enumerate(cam_infos):
